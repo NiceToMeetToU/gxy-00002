@@ -14,7 +14,7 @@ namespace GMEncryptTool
 {
     public static class SM9Utils
     {
-        private static readonly X9ECParameters _ecParameters = GMNamedCurves.GetByName("SM9P256V1");
+        private static readonly X9ECParameters _ecParameters = GMNamedCurves.GetByName("SM2P256V1");
         private static readonly ECDomainParameters _domainParams = new ECDomainParameters(_ecParameters);
 
         public static (string MasterPublicKey, string MasterPrivateKey) GenerateMasterKeyPair()
@@ -40,6 +40,8 @@ namespace GMEncryptTool
             byte[] hash = ComputeSM9Hash(identityBytes);
 
             BigInteger hashInt = new BigInteger(1, hash);
+            hashInt = hashInt.Mod(_ecParameters.N);
+
             var derivedPoint = masterPublicKey.Q.Multiply(hashInt).Normalize();
 
             return Hex.ToHexString(derivedPoint.GetEncoded(false)).ToUpper();
@@ -55,13 +57,20 @@ namespace GMEncryptTool
                 _domainParams);
 
             SecureRandom random = new SecureRandom();
-            BigInteger k = new BigInteger(_ecParameters.N.BitLength, random);
+            BigInteger k = new BigInteger(_ecParameters.N.BitLength - 1, random);
             k = k.Mod(_ecParameters.N);
+            if (k.SignValue <= 0)
+                k = k.Add(BigInteger.One);
 
             var c1 = _ecParameters.G.Multiply(k).Normalize();
             var c2Point = publicKey.Q.Multiply(k).Normalize();
 
-            byte[] c2 = Xor(plainBytes, c2Point.GetEncoded(false));
+            byte[] c2Bytes = c2Point.GetEncoded(false);
+            byte[] c2 = new byte[plainBytes.Length];
+            for (int i = 0; i < plainBytes.Length; i++)
+            {
+                c2[i] = (byte)(plainBytes[i] ^ c2Bytes[i % c2Bytes.Length]);
+            }
 
             byte[] c1Bytes = c1.GetEncoded(false);
             byte[] combined = new byte[c1Bytes.Length + c2.Length];
@@ -80,10 +89,14 @@ namespace GMEncryptTool
             byte[] identityBytes = Encoding.UTF8.GetBytes(identity);
             byte[] hash = ComputeSM9Hash(identityBytes);
             BigInteger hashInt = new BigInteger(1, hash);
+            hashInt = hashInt.Mod(_ecParameters.N);
 
             BigInteger dId = masterPrivateKey.Multiply(hashInt).Mod(_ecParameters.N);
 
-            int c1Length = _ecParameters.Curve.FieldSize / 8 * 2 + 1;
+            int c1Length = 65;
+            if (cipherBytes.Length <= c1Length)
+                throw new ArgumentException("Invalid cipher text length");
+
             byte[] c1Bytes = new byte[c1Length];
             byte[] c2 = new byte[cipherBytes.Length - c1Length];
             Buffer.BlockCopy(cipherBytes, 0, c1Bytes, 0, c1Length);
@@ -92,22 +105,14 @@ namespace GMEncryptTool
             var c1 = _ecParameters.Curve.DecodePoint(c1Bytes);
             var s = c1.Multiply(dId).Normalize();
 
-            byte[] plainBytes = Xor(c2, s.GetEncoded(false));
-
-            int validLength = plainBytes.Length;
-            for (int i = plainBytes.Length - 1; i >= 0; i--)
+            byte[] sBytes = s.GetEncoded(false);
+            byte[] plainBytes = new byte[c2.Length];
+            for (int i = 0; i < c2.Length; i++)
             {
-                if (plainBytes[i] != 0)
-                {
-                    validLength = i + 1;
-                    break;
-                }
+                plainBytes[i] = (byte)(c2[i] ^ sBytes[i % sBytes.Length]);
             }
 
-            byte[] result = new byte[validLength];
-            Buffer.BlockCopy(plainBytes, 0, result, 0, validLength);
-
-            return Encoding.UTF8.GetString(result);
+            return Encoding.UTF8.GetString(plainBytes);
         }
 
         private static byte[] ComputeSM9Hash(byte[] data)
@@ -116,16 +121,6 @@ namespace GMEncryptTool
             digest.BlockUpdate(data, 0, data.Length);
             byte[] result = new byte[digest.GetDigestSize()];
             digest.DoFinal(result, 0);
-            return result;
-        }
-
-        private static byte[] Xor(byte[] a, byte[] b)
-        {
-            byte[] result = new byte[a.Length];
-            for (int i = 0; i < a.Length; i++)
-            {
-                result[i] = (byte)(a[i] ^ b[i % b.Length]);
-            }
             return result;
         }
     }

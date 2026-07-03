@@ -44,7 +44,7 @@ namespace GMEncryptTool
                 Console.WriteLine();
                 Console.WriteLine("按回车键继续...");
                 Console.ReadLine();
-                Console.Clear();
+                try { Console.Clear(); } catch { }
             }
         }
 
